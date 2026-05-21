@@ -90,7 +90,10 @@ def test_bulk_tweet_meta_deserialized(client):
     assert "tweet" in article
     assert article["tweet"]["author_handle"] == "testuser"
     assert "BTC" in article["tweet"]["hashtags"]
-    assert "tweet_meta" not in article
+    # Both `tweet` (structured) and `tweet_meta` (raw JSON string) are returned
+    # for backward compat — see _row_to_dict in api.py (Q15 fix). Earlier this
+    # test asserted `tweet_meta` should be removed; it's deliberately kept.
+    assert "tweet_meta" in article
 
 
 def test_bulk_plain_article_no_tweet(client):

@@ -28,10 +28,12 @@ ticket and stay within `role_config.allowed_tools`.
 
 ## Project facts
 
-- **Repo:** `C:/Users/Rick/Documents/Code/pet_projects/whatsapp-archive`
-- **Default branch:** `master` (remote: `https://github.com/Alienbushman/whatsapp-archive.git`)
-- **Status:** Green-field as of 2026-05-17. Only `sample-archive/` and
-  docs exist — no source code, no commits on `master` yet.
+- **Repo:** clone of `https://github.com/Alienbushman/whatsapp-archive.git`
+  (originally developed at `~/Documents/Code/pet_projects/whatsapp-archive` on
+  the author's machine — paths are relative to the repo root, not absolute).
+- **Default branch:** `master`
+- **Status:** Live as of 2026-05-21 — full FastAPI + React + Qdrant + Ollama
+  stack with topics, entities, collections, research bins, and dashboards.
 - **Default role:** `planner` — break work down into a ticket DAG before
   coders execute.
 - **Default template:** `subtask_v1`.
