@@ -381,6 +381,7 @@ export default function App() {
           onScrapeRecovery={handleScrapeRecovery}
           onExports={handleExports}
           onResearchBins={handleResearchBins}
+          onTopics={handleTopics}
           showCollections={showCollections}
           showBookmarks={showBookmarks}
           showDigests={showDigests}
@@ -388,6 +389,7 @@ export default function App() {
           showScrapeRecovery={showScrapeRecovery}
           showExports={showExports}
           showResearchBins={showResearchBins}
+          showTopics={showTopics}
         />
       </div>
 

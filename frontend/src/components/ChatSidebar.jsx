@@ -66,7 +66,7 @@ async function deleteChatById(chatId) {
   return r.json()
 }
 
-export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults, onClearSearch, onTrending, showAggregations, onHome, onCollections, onBookmarks, onDigests, onEntities, onScrapeRecovery, onExports, onResearchBins, showCollections, showBookmarks, showDigests, showEntities, showScrapeRecovery, showExports, showResearchBins }) {
+export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults, onClearSearch, onTrending, showAggregations, onHome, onCollections, onBookmarks, onDigests, onEntities, onScrapeRecovery, onExports, onResearchBins, onTopics, showCollections, showBookmarks, showDigests, showEntities, showScrapeRecovery, showExports, showResearchBins, showTopics }) {
   const { chats, loading, error, refresh } = useChats()
   const [globalQuery, setGlobalQuery] = useState('')
   const [fuzzyMode, setFuzzyMode] = useState(false)
@@ -247,6 +247,13 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
               onClick={onCollections}
               title="Collections — curated, persistent groups for ongoing topics"
             >📁 Collections</button>
+          )}
+          {onTopics && (
+            <button
+              className={`sidebar-curate-btn${showTopics ? ' active' : ''}`}
+              onClick={onTopics}
+              title="Topics — LLM-clustered article topics, pin to preserve across reclustering"
+            >🧭 Topics</button>
           )}
           {onDigests && (
             <button
