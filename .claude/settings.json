@@ -7,7 +7,7 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "bash C:/Users/Rick/Documents/Code/pet_projects/whatsapp-archive/scripts/rebuild-on-ticket-complete.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/rebuild-on-ticket-complete.sh\"",
             "timeout": 300,
             "statusMessage": "Rebuilding Docker stack after ticket completion…",
             "async": true
