@@ -256,14 +256,19 @@ def _row_to_dict(row) -> dict:
     if not row:
         return {}
     result = dict(row)
-    # Tweet metadata is persisted as a JSON blob; deserialise it for the API surface.
-    raw_meta = result.pop("tweet_meta", None)
+    # Tweet metadata is persisted as a JSON blob. Surface BOTH the raw JSON string
+    # (key `tweet_meta`) and the parsed object (key `tweet`) so consumers expecting
+    # either shape work. Earlier the helper popped `tweet_meta`, which silently broke
+    # frontends that looked it up by that name (e.g. Q15 similar rendering).
+    raw_meta = result.get("tweet_meta")
     if raw_meta:
         import json as _json
         try:
             result["tweet"] = _json.loads(raw_meta)
         except (ValueError, TypeError):
             result["tweet"] = None
+    else:
+        result["tweet"] = None
     return result
 
 
@@ -290,6 +295,12 @@ def create_app(
     _total = sum(len(e.entries) for e in chats.values())
     logger.info("Loaded %d chats, %d total entries from %s", len(chats), _total, archive_dir)
 
+    # Captured at startup; used by the watcher thread to schedule scrape coroutines
+    # for newly-detected files. Without this, dropping a .txt into the watched
+    # folder produced a visible chat with orphaned URLs (no scrape → no enrich →
+    # no embed → never indexed). Bug #40.
+    _main_loop_holder: dict[str, Any] = {"loop": None}
+
     if watch:
         def _watcher():
             while True:
@@ -312,12 +323,38 @@ def create_app(
                 for _cid, _p in current.items():
                     _mtime = _p.stat().st_mtime
                     if _mtimes.get(_cid) != _mtime:
+                        is_new_chat = _cid not in _mtimes
                         _bytes = _p.read_bytes()
                         chats[_cid] = parse_file(_p)
                         chat_names[_cid] = _p.stem
                         _mtimes[_cid] = _mtime
                         _fingerprints[hashlib.sha256(_bytes).hexdigest()] = _cid
                         logger.info("Reloaded %s", _p.name)
+                        # Trigger the full downstream pipeline (scrape → enrich loop
+                        # picks up automatically → embed inside enrich) for any URLs
+                        # in the new/updated chat.
+                        if _env_flag("BACKGROUND_SCRAPE", "true"):
+                            new_urls = [lnk.url for lnk in chats[_cid].links]
+                            loop = _main_loop_holder.get("loop")
+                            if new_urls and loop is not None:
+                                try:
+                                    asyncio.run_coroutine_threadsafe(
+                                        run_scrape_loop(
+                                            new_urls,
+                                            db,
+                                            {"phase": "pending"},
+                                            concurrency=int(os.environ.get("SCRAPE_CONCURRENCY", "3")),
+                                        ),
+                                        loop,
+                                    )
+                                    logger.info(
+                                        "[watch] scheduled scrape of %d url(s) from %s chat %s",
+                                        len(new_urls),
+                                        "new" if is_new_chat else "modified",
+                                        _cid,
+                                    )
+                                except Exception as exc:
+                                    logger.warning("[watch] failed to schedule scrape: %s", exc)
 
         threading.Thread(target=_watcher, daemon=True, name="archive-watcher").start()
         logger.info("File watcher started (interval=%ds)", watch_interval)
@@ -345,6 +382,9 @@ def create_app(
 
     @app.on_event("startup")
     async def _start_background_tasks() -> None:
+        # Stash the running event loop so the watcher thread (started before this
+        # handler runs) can schedule coroutines via run_coroutine_threadsafe().
+        _main_loop_holder["loop"] = asyncio.get_running_loop()
         if _env_flag("BACKGROUND_SCRAPE", "true"):
             urls: list[str] = []
             for export in chats.values():
@@ -863,6 +903,10 @@ def create_app(
     ) -> dict:
         import json as _json
 
+        # Accept both singular ("article") and plural ("articles") forms — the
+        # fuzzy_search sibling uses plurals and many frontends mix them up.
+        kind = {"articles": "article", "messages": "message", "chats": "chat"}.get(kind, kind)
+
         filters_applied: dict = {}
         if from_date: filters_applied["from"] = from_date
         if to_date: filters_applied["to"] = to_date
@@ -973,6 +1017,7 @@ def create_app(
                             "article_id": aid,
                             "url": row["url"],
                             "title": row["title"],
+                            "tweet_meta": row["tweet_meta"],
                             "snippet": f"<mark>{raw_snip}</mark>" if raw_snip else "",
                             "match_field": "meta",
                             "match_source": "tweet_meta",
@@ -1007,6 +1052,7 @@ def create_app(
                         "article_id": aid,
                         "url": row["url"],
                         "title": row["title"],
+                        "tweet_meta": row["tweet_meta"],
                         "snippet": snippet,
                         "match_field": match_field,
                         "match_source": _match_source(row["url"] or "", match_field),
@@ -1030,6 +1076,7 @@ def create_app(
                         "article_id": row["id"],
                         "url": row["url"],
                         "title": row["title"],
+                        "tweet_meta": row["tweet_meta"],
                         "snippet": snippet,
                         "match_field": "summary",
                         "match_source": "article_summary",
@@ -1170,6 +1217,11 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not found")
         return _row_to_dict(row)
 
+    # NOTE: /api/articles/{article_id}/retry already exists (line ~564) and is
+    # wired into ScrapeRecoveryPage. The force=True flag on _scrape_one_sync
+    # (added 2026-05-20 alongside this comment) lets a future surface bypass the
+    # "already ok" early-return if needed.
+
     # ── Enrichment endpoints ─────────────────────────────────────────────────
 
     @app.post("/api/articles/{article_id}/enrich")
@@ -1244,14 +1296,87 @@ def create_app(
         hits = await asyncio.to_thread(find_similar_articles, qdrant, article_id, limit)
         if hits is None:
             raise HTTPException(status_code=404, detail="No vector for this article yet")
+        # Build url → list of (chat_id, chat_name, ts) so the UI can offer a
+        # "View in chat" affordance for EVERY location the URL was shared.
+        # Multiple chats may share the same URL — the UI shows a dropdown when
+        # more than one is present.
+        url_to_locs: dict[str, list[dict]] = {}
+        for cid, export in chats.items():
+            for entry in export.entries:
+                if not isinstance(entry, Message):
+                    continue
+                for tok in (entry.body or "").split():
+                    cleaned = tok.rstrip(".,)>]")
+                    if cleaned.startswith("http"):
+                        bucket = url_to_locs.setdefault(cleaned, [])
+                        # dedupe by (chat_id, ts) — same URL referenced twice in
+                        # the same chat produces one location row.
+                        key = (cid, entry.timestamp.isoformat())
+                        if not any(l["chat_id"] == key[0] and l["ts"] == key[1] for l in bucket):
+                            bucket.append({
+                                "chat_id": cid,
+                                "chat_name": chat_names[cid],
+                                "ts": entry.timestamp.isoformat(),
+                            })
         result = []
         for h in hits:
             if h["score"] < min_score:
                 continue
             row = get_article_by_id(db, h["id"])
             if row:
-                result.append({**_row_to_dict(row), "similarity_score": h["score"]})
+                d = {**_row_to_dict(row), "similarity_score": h["score"]}
+                locs = url_to_locs.get(d.get("url") or "", [])
+                d["locations"] = locs  # full list — ordered as first-encountered
+                # Keep the singular fields for backward compatibility with
+                # earlier frontend versions (Q15 follow-up).
+                if locs:
+                    d["chat_id"] = locs[0]["chat_id"]
+                    d["chat_name"] = locs[0]["chat_name"]
+                    d["ts_first_seen"] = locs[0]["ts"]
+                else:
+                    d["chat_id"] = None
+                    d["chat_name"] = None
+                    d["ts_first_seen"] = None
+                result.append(d)
         return result
+
+    @app.get("/api/chats/{chat_id}/find-message")
+    def find_message_page(
+        chat_id: str,
+        ts: str = Query(..., description="ISO timestamp of the message to locate"),
+        page_size: int = Query(50, ge=1, le=500),
+        q: str = Query(""),
+    ) -> dict:
+        """Return the page number that contains the message with the given ts.
+
+        Used by the frontend to jump from a similar-tweet click to the correct
+        page of the chat thread so the message can be scrolled into view.
+        """
+        if chat_id not in chats:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        export = chats[chat_id]
+        q_low = (q or "").lower()
+        # Apply same filter the messages endpoint does (search-by-body).
+        entries = export.entries
+        if q_low:
+            entries = [
+                e for e in entries
+                if (isinstance(e, Message) and q_low in (e.body or "").lower())
+                or (not isinstance(e, Message) and q_low in (getattr(e, "text", "") or "").lower())
+            ]
+        target_iso = ts
+        for idx, entry in enumerate(entries):
+            entry_ts = getattr(entry, "timestamp", None)
+            entry_ts_iso = entry_ts.isoformat() if entry_ts else None
+            if entry_ts_iso == target_iso:
+                page = (idx // page_size) + 1
+                return {
+                    "page": page,
+                    "index_in_page": idx % page_size,
+                    "total_pages": max(1, (len(entries) + page_size - 1) // page_size),
+                    "found": True,
+                }
+        return {"page": 1, "index_in_page": 0, "total_pages": 1, "found": False}
 
     class SimilarBulkBody(BaseModel):
         ids: list[int]
@@ -1590,9 +1715,24 @@ def create_app(
         return dict(row)
 
     @app.get("/api/research_bins")
-    def research_bins_list(include_expired: int = Query(0)) -> list[dict]:
+    def research_bins_list(
+        include_expired: int = Query(0),
+        with_pinned_for: str = Query(""),
+    ) -> list[dict]:
         rows = get_research_bins(db, include_expired=bool(include_expired))
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+        if with_pinned_for and ":" in with_pinned_for:
+            kind, _, tid = with_pinned_for.partition(":")
+            pinned_bin_ids = {
+                row["bin_id"]
+                for row in db.execute(
+                    "SELECT bin_id FROM research_bin_items WHERE target_kind=? AND target_id=?",
+                    (kind, tid),
+                ).fetchall()
+            }
+            for r in result:
+                r["is_pinned_here"] = r["id"] in pinned_bin_ids
+        return result
 
     @app.get("/api/research_bins/{bin_id}")
     def research_bin_get(bin_id: int, include_expired: int = Query(0)) -> dict:
@@ -2036,7 +2176,17 @@ def create_app(
 
     @app.get("/api/topics/status")
     def topics_status() -> dict:
-        return dict(topic_clustering_progress)
+        # Merge transient last-run counters with persistent DB counts so the UI
+        # never sees "topics: 0" while the topics table actually has rows.
+        progress = dict(topic_clustering_progress)
+        try:
+            persisted_topics = db.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+            persisted_articles = db.execute("SELECT COUNT(*) FROM topic_articles").fetchone()[0]
+        except Exception:
+            persisted_topics = persisted_articles = 0
+        progress["topics_persisted"] = persisted_topics
+        progress["articles_clustered"] = persisted_articles
+        return progress
 
     @app.post("/api/topics/recluster")
     async def topics_recluster(req_ollama_url: str = Query(None)) -> dict:
@@ -2057,6 +2207,38 @@ def create_app(
         if result is None:
             raise HTTPException(status_code=404, detail="Topic not found")
         return result
+
+    class _TopicPatch(BaseModel):
+        pinned: bool | None = None
+        custom_name: str | None = None
+
+    @app.patch("/api/topics/{topic_id}")
+    def topics_update(topic_id: int, body: _TopicPatch) -> dict:
+        """Set the pinned flag and/or override the cluster name. Pinned topics
+        survive future reclusterings (the cluster job re-inserts them rather
+        than wiping)."""
+        existing = db.execute("SELECT id, pinned, custom_name FROM topics WHERE id=?", (topic_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        fields = []
+        args: list = []
+        if body.pinned is not None:
+            fields.append("pinned = ?")
+            args.append(1 if body.pinned else 0)
+        if body.custom_name is not None:
+            fields.append("custom_name = ?")
+            args.append(body.custom_name.strip() or None)
+            # When user assigns a custom name, also update `name` so list views show it.
+            if body.custom_name.strip():
+                fields.append("name = ?")
+                args.append(body.custom_name.strip())
+        if not fields:
+            return {"ok": True, "no_op": True}
+        args.append(topic_id)
+        db.execute(f"UPDATE topics SET {', '.join(fields)} WHERE id = ?", args)
+        db.commit()
+        row = db.execute("SELECT id, name, custom_name, pinned, article_count FROM topics WHERE id=?", (topic_id,)).fetchone()
+        return dict(row)
 
     @app.get("/api/topics/{topic_id}/articles")
     def topics_articles(
@@ -2184,6 +2366,8 @@ def create_app(
         kind: str = Query("all"),
         limit: int = Query(20, ge=1, le=100),
     ) -> list[dict]:
+        # Accept both singular and plural — `/api/search` uses singular; align here too.
+        kind = {"article": "articles", "message": "messages", "chat": "chats"}.get(kind, kind)
         try:
             from rapidfuzz import process, fuzz
         except ImportError:
@@ -3283,6 +3467,64 @@ def create_app(
         label = bin_row["name"]
         slug = _SLUG_RE.sub("-", f"bin-{label.lower()}")[:40]
         return _export_bundle(label, slug, [], article_hits, format)
+
+    @app.get("/api/export/collection/{collection_id}")
+    def export_collection(collection_id: int, format: str = Query("md")):
+        col_row = get_collection(db, collection_id)
+        if not col_row:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        items = get_collection_items(db, collection_id, page=1, page_size=1000)
+        article_hits = [_row_to_dict(r) for r in items]
+        label = col_row["name"] if "name" in col_row.keys() else f"collection-{collection_id}"
+        slug = _SLUG_RE.sub("-", f"collection-{str(label).lower()}")[:40]
+        return _export_bundle(label, slug, [], article_hits, format)
+
+    @app.get("/api/export/search_results")
+    def export_search_results(
+        q: str = Query(..., min_length=1),
+        kind: str = Query("all"),
+        limit: int = Query(50, ge=1, le=500),
+        format: str = Query("md"),
+    ):
+        # Reuse the lexical search code path to assemble the hit set, then bundle.
+        normalised_kind = {"articles": "article", "messages": "message"}.get(kind, kind)
+        article_hits: list[dict] = []
+        msg_hits: list[dict] = []
+        # Articles via FTS5 helper.
+        if normalised_kind in ("article", "all"):
+            try:
+                rows = keyword_search_with_snippet(db, q, limit)
+                for row in rows:
+                    article_hits.append(_row_to_dict(row))
+            except Exception:
+                pass
+        # Messages via in-memory scan — shape matches what `_export_bundle` expects
+        # (ts, ts_str, chat_id, chat_name, sender, body — same as _collect_msgs_for_urls).
+        if normalised_kind in ("message", "all"):
+            q_low = q.lower()
+            for cid, export in chats.items():
+                for entry in export.entries:
+                    if not isinstance(entry, Message):
+                        continue
+                    body = entry.body or ""
+                    if q_low not in body.lower():
+                        continue
+                    ts = entry.timestamp
+                    msg_hits.append({
+                        "ts": ts,
+                        "ts_str": ts.isoformat(),
+                        "chat_id": cid,
+                        "chat_name": chat_names[cid],
+                        "sender": entry.sender,
+                        "body": body,
+                    })
+                    if len(msg_hits) >= limit:
+                        break
+                if len(msg_hits) >= limit:
+                    break
+        label = f"search-{q}"
+        slug = _SLUG_RE.sub("-", f"search-{q.lower()}")[:40]
+        return _export_bundle(label, slug, msg_hits, article_hits, format)
 
     class _PreviewRequest(BaseModel):
         scope: str = "keyword"

@@ -1,0 +1,8 @@
+1/5/23, 9:00 - Alice created group "Test"
+1/5/23, 9:01 - Alice: Hello everyone
+1/5/23, 9:02 - Bob: Hi there
+This is a continuation of Bob's message
+1/5/23, 9:03 - +1 555 000 0001: Message from unknown contact
+1/5/23, 9:04 - Alice: This message was deleted
+1/5/23, 9:05 - Bob: Final message
+1/5/23, 9:06 - Alice: Check this out https://example.com/article?q=test and also https://news.example.org/story.

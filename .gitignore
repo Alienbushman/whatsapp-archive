@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Private data — never commit
+sample-archive/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Local environment overrides
+.env
+.env.local
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Claude Code — share settings.json (project hooks), ignore the personal/local stuff
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

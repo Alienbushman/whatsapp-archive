@@ -1,0 +1,90 @@
+services:
+  web:
+    build: .
+    image: whatsapp-archive:latest
+    container_name: whatsapp-archive-web
+    ports:
+      - "8800:8000"
+    volumes:
+      # Mount sample-archive read-write — the SQLite articles.db is created
+      # alongside the .txt files via open_db(archive_dir).
+      - ./sample-archive:/app/data/incoming
+    environment:
+      ARCHIVE_DIR: /app/data/incoming
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_GEN_MODEL: qwen2.5:3b-instruct
+      QDRANT_URL: http://qdrant:6333
+      WATCH: "true"
+      WATCH_INTERVAL: "30"
+      LOG_LEVEL: INFO
+      BACKGROUND_SCRAPE: "true"
+      BACKGROUND_ENRICH: "true"
+      BACKGROUND_CLUSTERING: "true"
+      # OCR is disabled because the image doesn't ship with tesseract; the loop
+      # would otherwise log a failure per image every poll cycle. To enable, add
+      # `tesseract-ocr` to the apt-get install line in Dockerfile and flip back.
+      BACKGROUND_OCR: "false"
+      SCRAPE_CONCURRENCY: "3"
+      ENRICH_CONCURRENCY: "1"
+      ENRICH_POLL_INTERVAL: "60"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: whatsapp-archive-qdrant
+    ports:
+      - "6336:6333"
+    volumes:
+      - whatsapp_archive_qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: whatsapp-archive-ollama
+    ports:
+      - "11437:11434"
+    volumes:
+      - whatsapp_archive_ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    # Uncomment to enable GPU pass-through (NVIDIA only):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: whatsapp-archive-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Pulling qwen2.5:3b-instruct (large; first-run downloads ~2GB)..."
+        ollama pull qwen2.5:3b-instruct
+        echo "Pulling nomic-embed-text (~270MB)..."
+        ollama pull nomic-embed-text
+        echo "Model pulls complete."
+    restart: "no"
+
+volumes:
+  whatsapp_archive_ollama_models:
+  whatsapp_archive_qdrant_data:

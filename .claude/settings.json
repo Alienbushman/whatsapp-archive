@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__memories__ticket_complete",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash C:/Users/Rick/Documents/Code/pet_projects/whatsapp-archive/scripts/rebuild-on-ticket-complete.sh",
+            "timeout": 300,
+            "statusMessage": "Rebuilding Docker stack after ticket completion…",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

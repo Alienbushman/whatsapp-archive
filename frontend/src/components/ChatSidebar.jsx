@@ -238,14 +238,14 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
             <button
               className={`sidebar-curate-btn${showBookmarks ? ' active' : ''}`}
               onClick={onBookmarks}
-              title="Quick saves of individual items"
+              title="Bookmarks — quick saves of individual items"
             >★ Bookmarks</button>
           )}
           {onCollections && (
             <button
               className={`sidebar-curate-btn${showCollections ? ' active' : ''}`}
               onClick={onCollections}
-              title="Named, persistent buckets you curate over time"
+              title="Collections — curated, persistent groups for ongoing topics"
             >📁 Collections</button>
           )}
           {onDigests && (
@@ -270,7 +270,7 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
             <button
               className={`sidebar-curate-btn${showResearchBins ? ' active' : ''}`}
               onClick={() => onResearchBins('')}
-              title="Temporary scratchpads tied to a search session"
+              title="Research bins — temporary, search-tied scratchpads (auto-expire in 7d)"
             >🔍 Research bins</button>
           )}
           {onExports && (
