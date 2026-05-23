@@ -76,6 +76,7 @@ from .scrape.db import (
     get_collection,
     add_collection_item,
     remove_collection_item,
+    delete_collection,
     get_collection_items,
     create_research_bin,
     get_research_bins,
@@ -1659,8 +1660,21 @@ def create_app(
 
     @app.delete("/api/collections/{collection_id}/items/{article_id}")
     def collection_item_remove(collection_id: int, article_id: int) -> dict:
+        if not get_collection(db, collection_id):
+            raise HTTPException(status_code=404, detail="collection not found")
         removed = remove_collection_item(db, collection_id, article_id)
-        return {"removed": removed}
+        if not removed:
+            raise HTTPException(status_code=404, detail="item not in collection")
+        return {"removed": True}
+
+    @app.delete("/api/collections/{collection_id}")
+    def collection_delete(collection_id: int) -> dict:
+        """Delete the entire collection and its items. Returns 404 if the
+        collection doesn't exist."""
+        if not get_collection(db, collection_id):
+            raise HTTPException(status_code=404, detail="collection not found")
+        delete_collection(db, collection_id)
+        return {"deleted": True, "id": collection_id}
 
     @app.get("/api/collections/{collection_id}/items")
     def collection_items_list(
@@ -2216,22 +2230,37 @@ def create_app(
     def topics_update(topic_id: int, body: _TopicPatch) -> dict:
         """Set the pinned flag and/or override the cluster name. Pinned topics
         survive future reclusterings (the cluster job re-inserts them rather
-        than wiping)."""
+        than wiping).
+
+        Distinguishes "field omitted from request" (no-op) from "field present
+        with value null" (clear) using Pydantic's model_fields_set. So:
+          - {} → no-op
+          - {"pinned": true} → set pinned, leave custom_name untouched
+          - {"custom_name": ""} or {"custom_name": null} → clear custom_name
+          - {"custom_name": "Foo"} → set custom_name AND name to "Foo"
+        """
         existing = db.execute("SELECT id, pinned, custom_name FROM topics WHERE id=?", (topic_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Topic not found")
+        provided = body.model_fields_set
         fields = []
         args: list = []
-        if body.pinned is not None:
+        if "pinned" in provided and body.pinned is not None:
             fields.append("pinned = ?")
             args.append(1 if body.pinned else 0)
-        if body.custom_name is not None:
+        if "custom_name" in provided:
+            # Both null and empty-after-strip clear the custom_name. A real
+            # value sets both custom_name and the displayed name.
+            new_val: str | None
+            if body.custom_name is None or not body.custom_name.strip():
+                new_val = None
+            else:
+                new_val = body.custom_name.strip()
             fields.append("custom_name = ?")
-            args.append(body.custom_name.strip() or None)
-            # When user assigns a custom name, also update `name` so list views show it.
-            if body.custom_name.strip():
+            args.append(new_val)
+            if new_val is not None:
                 fields.append("name = ?")
-                args.append(body.custom_name.strip())
+                args.append(new_val)
         if not fields:
             return {"ok": True, "no_op": True}
         args.append(topic_id)

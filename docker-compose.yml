@@ -1,8 +1,18 @@
+# Shared log-rotation config — without this, `docker compose logs` files grow
+# unbounded on long-running deployments. 20 MB × 3 files = 60 MB cap per
+# service, ~240 MB cap across the stack.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   web:
     build: .
     image: whatsapp-archive:latest
     container_name: whatsapp-archive-web
+    logging: *default-logging
     ports:
       - "8800:8000"
     volumes:
@@ -37,6 +47,7 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: whatsapp-archive-qdrant
+    logging: *default-logging
     ports:
       - "6336:6333"
     volumes:
@@ -46,6 +57,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: whatsapp-archive-ollama
+    logging: *default-logging
     ports:
       - "11437:11434"
     volumes:
@@ -69,6 +81,7 @@ services:
   ollama-init:
     image: ollama/ollama:latest
     container_name: whatsapp-archive-ollama-init
+    logging: *default-logging
     depends_on:
       ollama:
         condition: service_healthy

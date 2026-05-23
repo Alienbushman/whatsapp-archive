@@ -50,6 +50,19 @@ def client(tmp_path: Path):
     return TestClient(app)
 
 
+@pytest.fixture
+def client_with_db(tmp_path: Path):
+    """Both a TestClient and a separate DB connection pointing at the SAME
+    articles.db, so tests can seed rows directly and observe them via the API."""
+    archive_dir = tmp_path / "archive_combined"
+    archive_dir.mkdir()
+    shutil.copy(FIXTURE_CHAT, archive_dir / "mini_chat.txt")
+    app = create_app(archive_dir)
+    conn = open_db(archive_dir)
+    yield TestClient(app), conn
+    conn.close()
+
+
 def _make_vectors(n: int, dim: int = 4) -> list[tuple[int, list[float]]]:
     """Generate n random (article_id, vector) pairs. IDs start at 1000."""
     rng = np.random.default_rng(42)
@@ -184,3 +197,76 @@ def test_api_topic_404(client):
 def test_api_topic_articles_404(client):
     resp = client.get("/api/topics/9999/articles")
     assert resp.status_code == 404
+
+
+# ── PATCH /api/topics/{id} ───────────────────────────────────────────────────
+# These seed a topic row directly and exercise the handler's branching for
+# field-omitted vs field-set-to-null vs field-set-to-value.
+
+def test_api_topic_patch_pinned_only(client_with_db):
+    """PATCH {pinned: true} sets pinned without touching custom_name."""
+    client, db = client_with_db
+    db.execute("INSERT INTO topics (id, name, description, article_count, generated_at, pinned, custom_name) VALUES (?,?,?,?,?,?,?)",
+               (501, "Seed name", "desc", 5, "2025-01-01", 0, None))
+    db.commit()
+    r = client.patch("/api/topics/501", json={"pinned": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pinned"] == 1
+    assert body["custom_name"] is None
+    assert body["name"] == "Seed name"
+
+
+def test_api_topic_patch_custom_name_sets_both_fields(client_with_db):
+    """Setting custom_name updates BOTH custom_name and the displayed name."""
+    client, db = client_with_db
+    db.execute("INSERT INTO topics (id, name, description, article_count, generated_at, pinned, custom_name) VALUES (?,?,?,?,?,?,?)",
+               (502, "Original", "", 5, "2025-01-01", 0, None))
+    db.commit()
+    r = client.patch("/api/topics/502", json={"custom_name": "Renamed"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["custom_name"] == "Renamed"
+    assert body["name"] == "Renamed"
+
+
+def test_api_topic_patch_custom_name_null_clears(client_with_db):
+    """Sending custom_name=null clears the field but keeps name (so the display
+    doesn't suddenly revert)."""
+    client, db = client_with_db
+    db.execute("INSERT INTO topics (id, name, description, article_count, generated_at, pinned, custom_name) VALUES (?,?,?,?,?,?,?)",
+               (503, "ShouldStay", "", 5, "2025-01-01", 0, "ToClear"))
+    db.commit()
+    r = client.patch("/api/topics/503", json={"custom_name": None})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["custom_name"] is None
+    # name should be untouched (still "ShouldStay")
+    assert body["name"] == "ShouldStay"
+
+
+def test_api_topic_patch_custom_name_empty_string_also_clears(client_with_db):
+    """Empty string is equivalent to null — both clear the override."""
+    client, db = client_with_db
+    db.execute("INSERT INTO topics (id, name, description, article_count, generated_at, pinned, custom_name) VALUES (?,?,?,?,?,?,?)",
+               (504, "Stays", "", 5, "2025-01-01", 0, "WillClear"))
+    db.commit()
+    r = client.patch("/api/topics/504", json={"custom_name": "   "})
+    assert r.status_code == 200, r.text
+    assert r.json()["custom_name"] is None
+
+
+def test_api_topic_patch_empty_body_is_noop(client_with_db):
+    """Empty patch body returns no_op without touching the row."""
+    client, db = client_with_db
+    db.execute("INSERT INTO topics (id, name, description, article_count, generated_at, pinned, custom_name) VALUES (?,?,?,?,?,?,?)",
+               (505, "Untouched", "", 5, "2025-01-01", 1, "KeepMe"))
+    db.commit()
+    r = client.patch("/api/topics/505", json={})
+    assert r.status_code == 200
+    assert r.json().get("no_op") is True
+    # Confirm nothing changed
+    row = db.execute("SELECT name, custom_name, pinned FROM topics WHERE id=505").fetchone()
+    assert row["name"] == "Untouched"
+    assert row["custom_name"] == "KeepMe"
+    assert row["pinned"] == 1

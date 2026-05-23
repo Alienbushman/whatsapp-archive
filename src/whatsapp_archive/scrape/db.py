@@ -2003,6 +2003,15 @@ def remove_collection_item(conn: sqlite3.Connection, collection_id: int, article
     return cur.rowcount > 0
 
 
+def delete_collection(conn: sqlite3.Connection, collection_id: int) -> bool:
+    """Delete a collection and all its items. Returns True if removed."""
+    # Items first (FK doesn't cascade in our schema, so do it explicitly).
+    conn.execute("DELETE FROM collection_items WHERE collection_id = ?", (collection_id,))
+    cur = conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def get_collection_items(
     conn: sqlite3.Connection,
     collection_id: int,

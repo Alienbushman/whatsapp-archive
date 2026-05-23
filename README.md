@@ -27,8 +27,12 @@ Everything runs locally. No cloud, no telemetry, no third-party API keys.
 This is the path that ships with the project. It brings up the web app plus the
 two dependencies it needs (Qdrant for vectors, Ollama for embeddings + LLM).
 
-**Prereqs:** Docker Desktop (or any Docker engine + `docker compose`). ~3 GB
-free disk for the Ollama models on first run.
+**Prereqs:**
+- Docker Desktop (or any Docker engine + `docker compose v2`)
+- ~5 GB free disk (image ~700 MB, Ollama models ~3 GB, vectors + DB scale with corpus)
+- ~8 GB RAM available (Ollama uses ~6 GB when active)
+- Ports **8800, 6336, 11437** free (web, qdrant, ollama — edit `docker-compose.yml` if taken)
+- Outbound internet to `pypi.org`, `registry.npmjs.org`, `ollama.com` on first run
 
 ```bash
 git clone https://github.com/Alienbushman/whatsapp-archive.git
@@ -42,13 +46,29 @@ cp /path/to/WhatsApp\ Chat\ with\ *.txt sample-archive/
 docker compose up -d
 ```
 
-First boot will pull ~3 GB of Ollama models (`qwen2.5:3b-instruct` for
-generation, `nomic-embed-text` for embeddings). The `ollama-init` sidecar does
-this once and exits.
+**First-run timing** (~5–10 min total — not hung, just downloading):
+- Docker image build: ~4 min (pip + npm dependency install, silent in compose logs)
+- Ollama model pull: ~3–5 min (~3 GB: `qwen2.5:3b-instruct` 1.9 GB + `nomic-embed-text` 270 MB)
+- The `ollama-init` sidecar does the pull once and exits; web is usable as soon as it's healthy
 
 Open **http://localhost:8800** in your browser. Background scrapers and the
 topic-clustering loop start automatically; the UI is usable immediately, and
 enrichment progress appears as it completes.
+
+### Offline / air-gap mode
+
+If the client machine has no outbound internet for scraping article URLs out of
+chats, disable the scrape loop:
+
+```yaml
+# in docker-compose.yml
+BACKGROUND_SCRAPE: "false"
+```
+
+Note: you still need outbound during the initial build (pip/npm/Ollama
+downloads). To run *fully* offline, build the image and pull the Ollama models
+on a connected machine, then `docker save`/`docker load` and copy the model
+volume across.
 
 ### Adding more chats later
 

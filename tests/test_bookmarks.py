@@ -284,6 +284,42 @@ def test_api_collection_remove_item(client):
     assert not any(i["id"] == aid1 for i in items)
 
 
+def test_api_collection_remove_nonexistent_item_404(client):
+    """Removing an item not in the collection should be 404, not silent 200."""
+    c, aid1, _ = client
+    col_id = c.post("/api/collections", json={"name": "404Test"}).json()["id"]
+    # Item was never added — delete should 404.
+    r = c.delete(f"/api/collections/{col_id}/items/{aid1}")
+    assert r.status_code == 404
+
+
+def test_api_collection_remove_item_in_nonexistent_collection_404(client):
+    c, aid1, _ = client
+    r = c.delete(f"/api/collections/99999/items/{aid1}")
+    assert r.status_code == 404
+
+
+def test_api_collection_delete(client):
+    """DELETE /api/collections/{id} removes the collection and its items."""
+    c, aid1, _ = client
+    col_id = c.post("/api/collections", json={"name": "DeleteMe"}).json()["id"]
+    c.post(f"/api/collections/{col_id}/items", json={"article_id": aid1})
+    r = c.delete(f"/api/collections/{col_id}")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": True, "id": col_id}
+    # Subsequent GET should 404.
+    assert c.get(f"/api/collections/{col_id}").status_code == 404
+    # And it's gone from the list.
+    listed = c.get("/api/collections").json()
+    assert not any(col["id"] == col_id for col in listed)
+
+
+def test_api_collection_delete_nonexistent_404(client):
+    c, _, _ = client
+    r = c.delete("/api/collections/99999")
+    assert r.status_code == 404
+
+
 def test_api_collection_404(client):
     c, _, _ = client
     r = c.get("/api/collections/99999")
