@@ -1088,6 +1088,53 @@ def create_app(
             except Exception:
                 pass
 
+            # Semantic blend — fetch top concept-matched articles via Qdrant +
+            # Ollama embedding. Catches queries like "vista gold" where the
+            # literal terms don't appear in any article but the concept does
+            # (tweets about gold miners, junior gold companies, etc.).
+            # Lower base score than FTS hits so literal matches dominate when
+            # they exist. Skipped entirely if qdrant is unreachable or the
+            # embed call fails — search degrades to keyword-only.
+            if qdrant is not None:
+                try:
+                    sem_hits = search_similar(qdrant, q, 15, ollama_url)
+                    for h in sem_hits:
+                        aid = h.get("id")
+                        if not aid or aid in seen_article_ids:
+                            continue
+                        row = get_article_by_id(db, aid)
+                        if row is None or not _passes_article_filters(row):
+                            continue
+                        seen_article_ids.add(aid)
+                        attr = url_to_chat.get(row["url"])
+                        # Use the tweet text or first 180 chars of body as the
+                        # snippet — no <mark> highlight since there's no literal
+                        # match to point at.
+                        snippet = ""
+                        if row["raw_text"]:
+                            snippet = (row["raw_text"] or "")[:180]
+                        # Cap semantic score so literal hits always rank above
+                        # even strong concept matches. qdrant cosine scores
+                        # typically sit in [0.3, 0.7]; multiply down to [0.06, 0.14].
+                        sem_score = max(0.0, min(0.2, float(h.get("score") or 0) * 0.2))
+                        results.append({
+                            "kind": "article",
+                            "article_id": aid,
+                            "url": row["url"],
+                            "title": row["title"],
+                            "tweet_meta": row["tweet_meta"],
+                            "snippet": snippet,
+                            "match_field": "semantic",
+                            "match_source": "semantic",
+                            "chat_id": attr[0] if attr else None,
+                            "chat_name": attr[1] if attr else None,
+                            "score": sem_score,
+                        })
+                except Exception:
+                    # Ollama/qdrant unavailable mid-request — silently skip the
+                    # semantic blend so literal results still come through.
+                    pass
+
             # Sentiment post-filter: batch-load enrichments for article hits
             if sentiment and results:
                 article_ids = {r["article_id"] for r in results if r.get("kind") == "article" and r.get("article_id")}
