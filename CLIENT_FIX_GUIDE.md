@@ -34,57 +34,22 @@ So the software loaded the chat files, but couldn't understand any line — ever
 
 ## What you need
 
-1. Your existing install folder, at:
-   ```
-   C:\Users\ben\OneDrive\Desktop\whatsapp-archive
-   ```
+You already have everything:
+- **Git** (you used it to install)
+- **Docker Desktop** (look for the whale icon 🐳 in the taskbar near the clock — bottom right of your screen)
+- Your existing install folder at `C:\Users\ben\OneDrive\Desktop\whatsapp-archive`
 
-2. **Docker Desktop** running (you should see the whale icon in your taskbar — bottom right of your screen, near the clock)
-
-3. The updated software — see step 1 below.
+If Docker isn't running, open **Docker Desktop** from the Start menu and wait ~30 seconds for the whale icon to settle (stop animating).
 
 ---
 
-## Step-by-step fix
+## The fix — 5 steps, about 10 minutes
 
-### Step 1 — Get the updated software
-
-You have two options. **Option A is easiest** if you're not used to using Git.
-
-#### Option A — Drop in the updated ZIP (easiest)
-
-You'll get a new `whatsapp-archive.zip` from me (sent via email or a USB stick).
-
-1. Open File Explorer (Windows key + E)
-2. Go to your Desktop
-3. **Rename** the existing `whatsapp-archive` folder to `whatsapp-archive-OLD` (right-click → Rename). This keeps a backup in case anything goes wrong.
-4. Save the new `whatsapp-archive.zip` to your Desktop.
-5. **Right-click** the ZIP → **Extract All...** → click **Extract** (accept the default destination — your Desktop). You'll get a new `whatsapp-archive` folder.
-6. **Copy your chat files** from the old folder to the new one:
-   - Open `whatsapp-archive-OLD\sample-archive\`
-   - Select all the `.txt` files (Ctrl+A)
-   - Copy (Ctrl+C)
-   - Open `whatsapp-archive\sample-archive\` (in the new folder — create it if it doesn't exist by right-click → New → Folder, named exactly `sample-archive`)
-   - Paste (Ctrl+V)
-
-Skip to **Step 2**.
-
-#### Option B — Use Git (if you're comfortable with the command line)
-
-Open a terminal in `C:\Users\ben\OneDrive\Desktop\whatsapp-archive` and run:
-```
-git pull
-```
-
-Then go to Step 2.
-
----
-
-### Step 2 — Open a terminal in the folder
+### Step 1 — Open a terminal in your install folder
 
 1. Open File Explorer (Windows key + E)
 2. Navigate to `C:\Users\ben\OneDrive\Desktop\whatsapp-archive`
-3. Click the **address bar at the top** (where it says the path)
+3. Click the **address bar at the top** (where it shows the path)
 4. **Delete the path** and type just: `cmd`
 5. Press **Enter**
 
@@ -93,84 +58,94 @@ A black terminal window will open. The first line should say:
 C:\Users\ben\OneDrive\Desktop\whatsapp-archive>
 ```
 
-### Step 3 — Make sure Docker is running
+If you don't see that exact path, you're in the wrong folder — close the terminal and try again.
 
-In your taskbar (bottom right), find the **Docker whale icon** 🐳.
-- If you see it and it's **green/blue and not animated**, Docker is ready.
-- If you don't see it, open **Docker Desktop** from your Start menu and wait ~30 seconds until the whale settles.
+### Step 2 — Pull the fix from GitHub
 
-### Step 4 — Stop the old broken version
+In the terminal, type this and press Enter:
 
-In the terminal you opened in Step 2, type this and press Enter:
+```
+git pull
+```
+
+You should see something like:
+```
+Updating a97cbe8..446ff45
+Fast-forward
+ src/whatsapp_archive/parser.py | ...
+ ... files changed ...
+```
+
+That means the fix has been downloaded. **Your chat files were not touched.**
+
+If you instead see "Already up to date." then you already have the fix — skip to Step 4.
+
+If you see an error about "local changes", let me know — don't try to fix it yourself.
+
+### Step 3 — Stop the broken version
+
+In the same terminal:
 
 ```
 docker compose down
 ```
 
-You should see something like:
+You'll see:
 ```
 Container whatsapp-archive-web      Stopped
 Container whatsapp-archive-qdrant   Stopped
 Container whatsapp-archive-ollama   Stopped
 ```
 
-This takes about 10 seconds. **No data is lost** — your chat files and database are on your hard drive, untouched.
+This takes about 10 seconds. **No data is lost** — your chat files and database stay on your hard drive.
 
-### Step 5 — Rebuild with the fixed software
-
-In the same terminal, type this and press Enter:
+### Step 4 — Rebuild with the fix in place
 
 ```
 docker compose up -d --build
 ```
 
-You will see a LOT of text scrolling — this is normal. It takes **5 to 10 minutes** the first time. It's downloading the latest software pieces and putting them together.
+You will see a LOT of text scrolling — this is normal. It takes **5 to 10 minutes** the first time because Docker is rebuilding the software with the fix.
 
-When it's done, you'll see lines like:
+When it's done, the scrolling stops and you'll see:
 ```
 Container whatsapp-archive-ollama   Started
 Container whatsapp-archive-qdrant   Started
 Container whatsapp-archive-web      Started
 ```
 
-The terminal will return to a prompt. That means you're done.
+The terminal will return to a prompt (`C:\Users\ben\OneDrive\Desktop\whatsapp-archive>`). That means it's done.
 
-### Step 6 — Wait one more minute, then open the app
+### Step 5 — Open the app and check
 
-The first time the app reads your chats with the fix in place, it needs a moment to parse them all.
-
-1. Wait **60 seconds**.
-2. Open your browser.
+1. Wait **60 seconds** (the app needs a moment to re-parse all your chats with the new parser)
+2. Open your browser
 3. Go to: `http://localhost:8800`
-4. Click on any chat in the left sidebar.
+4. Click on any chat in the left sidebar
 5. **You should now see all the messages.** 🎉
-
-If you still don't see messages, please send me a screenshot of the chat list page and we'll dig further.
 
 ---
 
-## What if something goes wrong?
+## If something goes wrong
 
-### "Docker is not running" or weird Docker errors
+### `git pull` says "your local branch has diverged" or anything scary
 
-1. Open Docker Desktop from Start menu
-2. Wait until the whale icon is steady (not animated)
-3. Try Step 5 again
+Stop and send me a screenshot. Don't run any other git commands — those messages can mean different things and I'd rather see exactly what yours says.
 
-### Step 5 fails partway with a red error
+### Step 4 fails partway with a red error
 
-Most often this means Docker ran out of disk space or memory.
+Most often this means Docker ran out of disk space.
 
 1. Open Docker Desktop
-2. Click the **Troubleshoot** icon (top right, looks like a bug)
+2. Click the **Troubleshoot** button (top-right, looks like a bug 🐛)
 3. Click **Clean / Purge data**
-4. Try Step 5 again
+4. Try Step 4 again
 
 ### I see chats but messages are still empty
 
 Send me:
-- A screenshot of the chat list
-- A screenshot of any open chat
+- A screenshot of the chat list page
+- A screenshot of one open (empty) chat
 - The output of running this in the terminal:
   ```
   docker compose logs web --tail 50
@@ -178,10 +153,12 @@ Send me:
 
 ### I want to go back to the old version
 
-Your backup is at `C:\Users\ben\OneDrive\Desktop\whatsapp-archive-OLD` (if you followed Option A).
-1. Delete the new `whatsapp-archive` folder
-2. Rename `whatsapp-archive-OLD` back to `whatsapp-archive`
-3. Run `docker compose up -d` in that folder again
+```
+git reset --hard a97cbe8
+docker compose up -d --build
+```
+
+(That `a97cbe8` is the commit ID of the version before the fix. Tells git to roll back. Then rebuilds.)
 
 ---
 
@@ -189,17 +166,17 @@ Your backup is at `C:\Users\ben\OneDrive\Desktop\whatsapp-archive-OLD` (if you f
 
 When you export new chats from WhatsApp:
 
-1. Save the `.txt` file
+1. Save the `.txt` file from your phone (e.g. via email or AirDrop)
 2. Open `C:\Users\ben\OneDrive\Desktop\whatsapp-archive\sample-archive\`
 3. Drop the new `.txt` file in there
-4. Wait 30 seconds — the app will pick it up automatically. No need to restart.
+4. Wait 30 seconds — the app picks it up automatically. No restart needed.
 5. Refresh your browser at `http://localhost:8800`
 
 ---
 
 ## Quick reference — useful commands
 
-(All run from a terminal opened in the `whatsapp-archive` folder per Step 2)
+(All run from a terminal opened in the `whatsapp-archive` folder per Step 1)
 
 | What you want | What to type |
 |---|---|
@@ -208,7 +185,8 @@ When you export new chats from WhatsApp:
 | Restart after editing chats | `docker compose restart web` |
 | See what the app is doing (logs) | `docker compose logs -f web` (press Ctrl+C to stop watching) |
 | Check everything is running | `docker compose ps` |
+| Update to a future fix | `git pull` then `docker compose up -d --build` |
 
 ---
 
-Last updated: parser fix for date formats including `YYYY/MM/DD`. If you have any issues, take a screenshot and send it over — I'll talk you through it.
+If you have any issues, take a screenshot of what you see and send it over — I'll talk you through it.
