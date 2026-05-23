@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import TimeseriesChart from './TimeseriesChart.jsx'
 import NarrativeGraphView from './NarrativeGraphView.jsx'
+import ResizableDrawer from './ResizableDrawer.jsx'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,30 +32,35 @@ function ArticleChip({ article, onClick }) {
 
 function ArticleDrawer({ article, onClose }) {
   if (!article) return null
+  // ResizableDrawer wraps the inner panel; the overlay sits around it so
+  // clicking the dim area still closes. e.stopPropagation on the panel
+  // prevents the close-on-click from firing when interacting with content.
   return (
     <div className="research-drawer-overlay" onClick={onClose}>
-      <div className="research-drawer" onClick={e => e.stopPropagation()}>
-        <div className="research-drawer-header">
-          <h3 className="research-drawer-title">{article.title || 'Article'}</h3>
-          <button className="research-drawer-close" onClick={onClose}>✕</button>
-        </div>
-        <div className="research-drawer-meta">
-          {article.author_handle && <span>@{article.author_handle}</span>}
-          {article.published_at && <span>{article.published_at?.slice(0, 10)}</span>}
-          {article.sentiment && sentimentBadge(article.sentiment)}
-          {article.favorite_count > 0 && (
-            <span className="research-drawer-engagement">♥ {engagementLabel(article.favorite_count)}</span>
-          )}
-        </div>
-        {article.summary && <p className="research-drawer-summary">{article.summary}</p>}
-        <a
-          className="research-drawer-link"
-          href={article.url}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Open source ↗
-        </a>
+      <div onClick={e => e.stopPropagation()}>
+        <ResizableDrawer className="research-drawer" defaultWidth={480}>
+          <div className="research-drawer-header">
+            <h3 className="research-drawer-title">{article.title || 'Article'}</h3>
+            <button className="research-drawer-close" onClick={onClose}>✕</button>
+          </div>
+          <div className="research-drawer-meta">
+            {article.author_handle && <span>@{article.author_handle}</span>}
+            {article.published_at && <span>{article.published_at?.slice(0, 10)}</span>}
+            {article.sentiment && sentimentBadge(article.sentiment)}
+            {article.favorite_count > 0 && (
+              <span className="research-drawer-engagement">♥ {engagementLabel(article.favorite_count)}</span>
+            )}
+          </div>
+          {article.summary && <p className="research-drawer-summary">{article.summary}</p>}
+          <a
+            className="research-drawer-link"
+            href={article.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open source ↗
+          </a>
+        </ResizableDrawer>
       </div>
     </div>
   )

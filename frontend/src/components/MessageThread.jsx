@@ -3,6 +3,7 @@ import { useMessages } from '../hooks/useMessages.js'
 import MessageBubble, { extractUrls } from './MessageBubble.jsx'
 import LinkPreview, { useBulkStatus, useTweetCache } from './LinkPreview.jsx'
 import { useGroupContext } from './GroupContext.jsx'
+import ResizableDrawer from './ResizableDrawer.jsx'
 
 function useSimilarBulk(tweetCache) {
   const [similarCache, setSimilarCache] = useState({})
@@ -212,9 +213,9 @@ export default function MessageThread({ chatId, chatName, onSearch, onAuthorClic
       </div>
 
       {previewUrl && (
-        <div className="preview-drawer">
+        <ResizableDrawer className="preview-drawer">
           <LinkPreview url={previewUrl} onClose={() => setPreviewUrl(null)} onSearch={onSearch} onAuthorClick={onAuthorClick} onHashtagClick={onHashtagClick} onMentionClick={onMentionClick} onOpenInChat={onOpenInChat} />
-        </div>
+        </ResizableDrawer>
       )}
     </div>
   )

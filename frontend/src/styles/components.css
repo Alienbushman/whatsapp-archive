@@ -253,20 +253,61 @@
 
 /* ── Preview drawer ── */
 .preview-drawer {
+  /* Default width — React inline style (from ResizableDrawer) overrides
+     when the user drags the handle. */
   width: 360px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   overflow-y: auto;
   background: var(--bg);
+  position: relative;  /* anchor for .drawer-resize-handle */
+}
+
+/* Universal drag handle used by ResizableDrawer (preview-drawer +
+   research-drawer + any future right-anchored panel). 6px hit area, 2px
+   visible bar at left edge that fades to accent on hover. */
+.drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.drawer-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 2px;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.drawer-resize-handle:hover::before,
+.drawer-resize-handle:active::before {
+  background: var(--accent, #3b82f6);
 }
 
 @media (max-width: 900px) {
   .preview-drawer {
     position: fixed;
     inset: 0 0 0 auto;
-    width: min(360px, 100vw);
+    /* Override any drag-set inline width on narrow viewports — at this size
+       the drawer fills the screen and resizing doesn't make sense. */
+    width: min(360px, 100vw) !important;
     z-index: 200;
     box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+  }
+  /* Hide the handle on narrow viewports for all drawers. */
+  .drawer-resize-handle {
+    display: none;
+  }
+  .research-drawer {
+    width: min(480px, 100vw) !important;
   }
 }
 
@@ -2403,6 +2444,7 @@
   justify-content: flex-end;
 }
 .research-drawer {
+  /* Default width — ResizableDrawer inline style overrides on drag. */
   width: min(480px, 100vw);
   height: 100%;
   background: var(--bg);
@@ -2412,6 +2454,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: relative;  /* anchor for .drawer-resize-handle */
 }
 .research-drawer-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .research-drawer-title { font-size: 1rem; font-weight: 600; margin: 0; flex: 1; }

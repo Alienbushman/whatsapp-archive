@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 import LinkPreview, { TweetCard } from './LinkPreview.jsx'
 import AddToBinButton from './AddToBinButton.jsx'
+import ResizableDrawer from './ResizableDrawer.jsx'
 
 const SENTIMENTS = ['positive', 'negative', 'neutral']
 
@@ -258,9 +259,9 @@ export default function SearchResults({ results, query, onSelectChat, onSearch, 
         </div>
 
         {previewUrl && (
-          <div className="preview-drawer">
+          <ResizableDrawer className="preview-drawer">
             <LinkPreview url={previewUrl} onClose={() => setPreviewUrl(null)} onSearch={onSearch} onAuthorClick={onAuthorClick} onHashtagClick={onHashtagClick} onMentionClick={onMentionClick} />
-          </div>
+          </ResizableDrawer>
         )}
       </div>
     </div>
