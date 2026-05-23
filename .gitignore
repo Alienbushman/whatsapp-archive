@@ -23,6 +23,7 @@ yarn-error.log*
 
 # Private data — never commit
 sample-archive/
+client-install/
 *.db
 *.db-journal
 *.sqlite

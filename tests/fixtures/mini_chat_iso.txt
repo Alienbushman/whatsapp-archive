@@ -1,0 +1,7 @@
+2025/01/24, 08:51 - Messages and calls are end-to-end encrypted.
+2025/01/24, 08:51 - Alice created group "ISO Test"
+2025/01/24, 09:00 - Alice: First message in ISO date format
+2025/01/24, 09:01 - Bob: Reply with a URL https://example.com/foo
+2025/01/24, 09:02 - Alice: Multiline
+this line continues the previous
+2025/02/15, 12:30 - Bob: Different day
