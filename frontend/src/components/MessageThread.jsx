@@ -4,6 +4,57 @@ import MessageBubble, { extractUrls } from './MessageBubble.jsx'
 import LinkPreview, { useBulkStatus, useTweetCache } from './LinkPreview.jsx'
 import { useGroupContext } from './GroupContext.jsx'
 
+// The right-side drawer that opens when you click "View in drawer ↗" on a
+// tweet card. Width is fixed at 360px by default but can be drag-resized via
+// the handle on its left edge. State is intentionally local to the component
+// so each new chat view starts fresh (no localStorage — see task #17).
+function DrawerWithResizeHandle({ children }) {
+  const [width, setWidth] = React.useState(360)
+  const draggingRef = useRef(false)
+
+  const onMouseDown = (e) => {
+    e.preventDefault()
+    draggingRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  React.useEffect(() => {
+    function onMove(e) {
+      if (!draggingRef.current) return
+      // Drawer is on the right; resizing increases width as cursor moves LEFT.
+      const newWidth = window.innerWidth - e.clientX
+      // Clamp to a sensible range so a wild drag can't bury the thread pane
+      // or shrink the drawer below the tweet card's minimum readable width.
+      setWidth(Math.max(280, Math.min(newWidth, 800)))
+    }
+    function onUp() {
+      if (!draggingRef.current) return
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
+  return (
+    <div className="preview-drawer" style={{ width: `${width}px` }}>
+      <div
+        className="preview-drawer-resize-handle"
+        onMouseDown={onMouseDown}
+        title="Drag to resize"
+      />
+      {children}
+    </div>
+  )
+}
+
+
 function useSimilarBulk(tweetCache) {
   const [similarCache, setSimilarCache] = useState({})
   const fetchedRef = useRef(new Set())
@@ -212,9 +263,9 @@ export default function MessageThread({ chatId, chatName, onSearch, onAuthorClic
       </div>
 
       {previewUrl && (
-        <div className="preview-drawer">
+        <DrawerWithResizeHandle>
           <LinkPreview url={previewUrl} onClose={() => setPreviewUrl(null)} onSearch={onSearch} onAuthorClick={onAuthorClick} onHashtagClick={onHashtagClick} onMentionClick={onMentionClick} onOpenInChat={onOpenInChat} />
-        </div>
+        </DrawerWithResizeHandle>
       )}
     </div>
   )

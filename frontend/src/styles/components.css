@@ -253,20 +253,56 @@
 
 /* ── Preview drawer ── */
 .preview-drawer {
+  /* Default width applied here; React inline style overrides when user drags. */
   width: 360px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   overflow-y: auto;
   background: var(--bg);
+  position: relative;
+}
+
+/* Drag handle on the LEFT edge of the drawer. 6px wide hit area, but only
+   the centered 1px shows a colored bar so it doesn't look heavy. Hovering or
+   dragging fades the bar to the accent color. */
+.preview-drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.preview-drawer-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 2px;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.preview-drawer-resize-handle:hover::before,
+.preview-drawer-resize-handle:active::before {
+  background: var(--accent, #3b82f6);
 }
 
 @media (max-width: 900px) {
   .preview-drawer {
     position: fixed;
     inset: 0 0 0 auto;
-    width: min(360px, 100vw);
+    /* Override any drag-set inline width on narrow viewports — at this size
+       the drawer fills the screen and resizing doesn't make sense. */
+    width: min(360px, 100vw) !important;
     z-index: 200;
     box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+  }
+  .preview-drawer-resize-handle {
+    display: none;
   }
 }
 
