@@ -236,6 +236,61 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str)
             raise
 
 
+def _ensure_entity_dedup(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: collapse canonical entities sharing normalized_name.
+
+    Kind precedence: ticker > company > other > person.
+    After merging, creates a partial UNIQUE INDEX on (normalized_name) WHERE
+    canonical_id IS NULL so future inserts cannot create new duplicates.
+    """
+    _KIND_RANK: dict[str, int] = {"ticker": 3, "company": 2, "other": 1, "person": 0}
+
+    # Fast check — nothing to do if no multi-kind canonical duplicates exist
+    dup_rows = conn.execute(
+        "SELECT normalized_name FROM entities WHERE canonical_id IS NULL "
+        "GROUP BY normalized_name HAVING COUNT(*) > 1"
+    ).fetchall()
+
+    if dup_rows:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        for row in dup_rows:
+            norm = row["normalized_name"]
+            members = conn.execute(
+                "SELECT id, name, kind FROM entities WHERE normalized_name=? AND canonical_id IS NULL ORDER BY id",
+                (norm,),
+            ).fetchall()
+            canonical = max(members, key=lambda r: (_KIND_RANK.get(r["kind"], -1), -r["id"]))
+            source_ids = [m["id"] for m in members if m["id"] != canonical["id"]]
+            if not source_ids:
+                continue
+            placeholders = ",".join("?" * len(source_ids))
+            # Migrate article_entities to canonical, then mark sources as aliases
+            conn.execute(
+                f"""INSERT OR IGNORE INTO article_entities (article_id, entity_id, mention_text, assigned_by)
+                    SELECT article_id, ?, mention_text, assigned_by
+                    FROM article_entities WHERE entity_id IN ({placeholders})""",
+                [canonical["id"], *source_ids],
+            )
+            conn.execute(
+                f"DELETE FROM article_entities WHERE entity_id IN ({placeholders})",
+                source_ids,
+            )
+            conn.execute(
+                f"UPDATE entities SET canonical_id=?, merged_at=? WHERE id IN ({placeholders})",
+                [canonical["id"], now, *source_ids],
+            )
+        conn.commit()
+
+    # Partial UNIQUE index: exactly one canonical row per normalized_name
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_norm_canonical "
+        "ON entities (normalized_name) WHERE canonical_id IS NULL"
+    )
+    conn.commit()
+
+
 def _ensure_fts_has_tweet_blob(conn: sqlite3.Connection) -> None:
     """Drop articles_fts if it was created without tweet_search_blob so the new
     _FTS_SCHEMA (with the third column) can take its place on the next CREATE."""
@@ -294,6 +349,8 @@ def open_db(archive_dir: Path) -> sqlite3.Connection:
     # Topics: allow user-pinned + custom-named clusters that survive reclustering.
     _ensure_column(conn, "topics", "pinned", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "topics", "custom_name", "TEXT")
+    # Entity dedup: collapse multi-kind canonical duplicates + enforce partial unique index.
+    _ensure_entity_dedup(conn)
     conn.execute("INSERT INTO articles_fts(articles_fts) VALUES('rebuild')")
     conn.commit()
     return conn
