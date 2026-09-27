@@ -72,8 +72,25 @@ volume across.
 
 ### Adding more chats later
 
-Drop additional `.txt` files into `sample-archive/` — the `WATCH=true` loop
-picks them up within 30s, no restart needed.
+Use **Upload chats…** in the sidebar (you can select several `.txt` files at
+once), or drop the files into `sample-archive/`. The `WATCH=true` loop picks
+dropped files up within 30s, no restart needed.
+
+WhatsApp can only export a chat's whole history, so to bring a chat up to date,
+export it again and **upload** the new file. It's matched to the chat you
+already have, even if it's named `… (1).txt`, and only the new messages are
+added. Nothing already in the archive is dropped. A renamed group is still
+matched as long as its export includes the "created group" line, and so is a
+1:1 chat whose export was renamed because you saved the contact. Matching is
+deliberately cautious: when an upload can't be confidently tied to an existing
+chat, it's added as a separate chat rather than risk mixing two conversations,
+and a different chat that shares a filename is added alongside, never written
+over. Files dropped straight into `sample-archive/` are loaded as-is, not
+merged, so use the upload button to update a chat.
+
+Removing a chat with the 🗑 button moves its `.txt` into
+`sample-archive/.removed-chats/`, so it stays removed and can be uploaded again
+later.
 
 ### Stopping / clean-up
 

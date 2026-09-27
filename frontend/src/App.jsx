@@ -145,8 +145,15 @@ export default function App() {
   const [compareEntities, setCompareEntities] = useState(null) // list of entity names, or null
   // When set, MessageThread jumps to the page containing this ts + scrolls + flashes.
   const [scrollToMessage, setScrollToMessage] = useState(null)
+  // Bumped to make the open thread refetch, e.g. after a newer export of it was uploaded.
+  const [threadRevision, setThreadRevision] = useState(0)
+
+  function handleChatsUpdated(ids) {
+    if (ids.includes(selectedChatId)) setThreadRevision(r => r + 1)
+  }
 
   function handleSelectChat(id, name) {
+    if (id === selectedChatId) setThreadRevision(r => r + 1)
     setSelectedChatId(id)
     setSelectedChatName(name)
     setSearchResults(null)
@@ -369,6 +376,7 @@ export default function App() {
         <ChatSidebar
           selectedId={selectedChatId}
           onSelectChat={handleSelectChat}
+          onChatsUpdated={handleChatsUpdated}
           onSearchResults={handleSearchResults}
           onClearSearch={handleClearSearch}
           onTrending={handleTrending}
@@ -489,7 +497,7 @@ export default function App() {
         ) : view === 'ask' && selectedChatId ? (
           <AskPanel chatId={selectedChatId} chatName={selectedChatName} />
         ) : selectedChatId ? (
-          <MessageThread chatId={selectedChatId} chatName={selectedChatName} onSearch={handleSearchResults} onAuthorClick={handleAuthorClick} onHashtagClick={handleHashtagClick} onMentionClick={handleMentionClick} scrollToMessage={scrollToMessage} onConsumeScrollTarget={() => setScrollToMessage(null)} onOpenInChat={handleOpenInChat} />
+          <MessageThread chatId={selectedChatId} chatName={selectedChatName} revision={threadRevision} onSearch={handleSearchResults} onAuthorClick={handleAuthorClick} onHashtagClick={handleHashtagClick} onMentionClick={handleMentionClick} scrollToMessage={scrollToMessage} onConsumeScrollTarget={() => setScrollToMessage(null)} onOpenInChat={handleOpenInChat} />
         ) : (
           <EntityHomePage
             onOpenWorkspace={handleResearchEntity}

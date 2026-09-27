@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Union
+from typing import Iterator, NamedTuple, Union
 
 from .models import ChatExport, LinkRef, Message, SystemEvent
 
@@ -81,51 +81,104 @@ def _extract_urls(body: str) -> list[str]:
     return [_URL_TRAIL.sub("", u) for u in _URL_RE.findall(body)]
 
 
-def parse_file(path: Path) -> ChatExport:
-    entries: list[Union[Message, SystemEvent]] = []
+class RawEntry(NamedTuple):
+    """A parsed entry plus the exact export lines it came from.
+
+    Upload merging dedupes on the parsed entry but writes the raw lines back,
+    so a merged file stays a valid export with nothing reformatted.
+    """
+
+    entry: Union[Message, SystemEvent]
+    raw: str
+
+
+def decode_export(data: bytes) -> str:
+    """Decode export bytes the same way for parsing, fingerprinting and merging.
+
+    utf-8-sig drops a leading BOM (which would otherwise hide the first entry
+    from _ENTRY_RE); newlines are normalised as text-mode open() would.
+    Raises UnicodeDecodeError on invalid UTF-8.
+    """
+    text = data.decode("utf-8-sig")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _lines(text: str) -> Iterator[str]:
+    # str.splitlines() also breaks on  , \x1c etc., which can appear
+    # inside message bodies — split on \n only, like file iteration does.
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end == -1:
+            yield text[start:]
+            return
+        yield text[start:end + 1]
+        start = end + 1
+
+
+def split_entries(text: str) -> tuple[str, list[RawEntry]]:
+    """Split export text into (preamble, entries), keeping each entry's raw lines.
+
+    The preamble is anything before the first recognisable entry line.
+    """
+    preamble: list[str] = []
+    out: list[RawEntry] = []
     current: Union[Message, SystemEvent, None] = None
+    raw: list[str] = []
 
-    with open(path, encoding="utf-8") as fh:
-        for raw_line in fh:
-            line = raw_line.rstrip("\n").rstrip("\r")
+    for raw_line in _lines(text):
+        line = raw_line.rstrip("\n").rstrip("\r")
 
-            m = _ENTRY_RE.match(line)
-            ts: datetime | None = None
-            if m:
-                # A regex match doesn't guarantee a valid date (e.g. 99/99/99
-                # would match the shape but fail to parse). Treat unparseable
-                # dates as continuations of the prior message rather than
-                # crashing the whole import — keeps partial chats usable.
-                try:
-                    ts = _parse_timestamp(m.group(1), m.group(2))
-                except ValueError:
-                    m = None
-            if m and ts is not None:
-                if current is not None:
-                    entries.append(current)
+        m = _ENTRY_RE.match(line)
+        ts: datetime | None = None
+        if m:
+            # A regex match doesn't guarantee a valid date (e.g. 99/99/99
+            # would match the shape but fail to parse). Treat unparseable
+            # dates as continuations of the prior message rather than
+            # crashing the whole import — keeps partial chats usable.
+            try:
+                ts = _parse_timestamp(m.group(1), m.group(2))
+            except ValueError:
+                m = None
+        if m and ts is not None:
+            if current is not None:
+                out.append(RawEntry(current, "".join(raw)))
+            raw = [raw_line]
 
-                date_part, time_part, rest = m.group(1), m.group(2), m.group(3)
-
-                sender_m = _SENDER_RE.match(rest)
-                if sender_m:
-                    sender = sender_m.group(1)
-                    body = _strip_markup(sender_m.group(2))
-                    current = Message(
-                        timestamp=ts,
-                        sender=sender,
-                        body=body,
-                        is_deleted=body.strip() == "This message was deleted",
-                    )
-                else:
-                    current = SystemEvent(timestamp=ts, text=_strip_markup(rest))
+            rest = m.group(3)
+            sender_m = _SENDER_RE.match(rest)
+            if sender_m:
+                sender = sender_m.group(1)
+                body = _strip_markup(sender_m.group(2))
+                current = Message(
+                    timestamp=ts,
+                    sender=sender,
+                    body=body,
+                    is_deleted=body.strip() == "This message was deleted",
+                )
             else:
-                if isinstance(current, Message):
-                    current = current.model_copy(
-                        update={"body": current.body + "\n" + line}
-                    )
+                current = SystemEvent(timestamp=ts, text=_strip_markup(rest))
+        elif current is None:
+            preamble.append(raw_line)
+        else:
+            raw.append(raw_line)
+            if isinstance(current, Message):
+                current = current.model_copy(
+                    update={"body": current.body + "\n" + line}
+                )
 
     if current is not None:
-        entries.append(current)
+        out.append(RawEntry(current, "".join(raw)))
+
+    return "".join(preamble), out
+
+
+def parse_file(path: Path) -> ChatExport:
+    return parse_text(decode_export(path.read_bytes()), source_file=path)
+
+
+def parse_text(text: str, source_file: Path) -> ChatExport:
+    entries: list[Union[Message, SystemEvent]] = [r.entry for r in split_entries(text)[1]]
 
     # Build link catalog
     links: list[LinkRef] = []
@@ -139,4 +192,4 @@ def parse_file(path: Path) -> ChatExport:
                     timestamp=entry.timestamp,
                 ))
 
-    return ChatExport(source_file=path, entries=entries, links=links)
+    return ChatExport(source_file=source_file, entries=entries, links=links)

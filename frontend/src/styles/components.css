@@ -59,7 +59,7 @@
 .chat-item.active .chat-count { color: rgba(255,255,255,0.7); }
 
 .chat-list-item { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
-.chat-list-item .chat-item { flex: 1; border-bottom: none; }
+.chat-list-item .chat-item { flex: 1; min-width: 0; border-bottom: none; }
 .chat-delete-btn {
   flex-shrink: 0;
   background: none;
@@ -727,7 +727,30 @@
 }
 .upload-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .upload-btn:disabled { opacity: 0.6; cursor: progress; }
-.upload-error { font-size: 0.78rem; margin-top: 6px; padding: 6px 8px; }
+.upload-results {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+  font-size: 0.78rem;
+}
+.upload-results ul {
+  flex: 1;
+  min-width: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.upload-results li { overflow-wrap: anywhere; color: var(--text-muted); }
+.upload-results li .btn-link { font-size: inherit; padding: 0; text-align: left; }
+.upload-results li.error { color: var(--danger); }
 
 /* ── Export modal ── */
 .modal-backdrop {
