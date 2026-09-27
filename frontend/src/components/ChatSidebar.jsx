@@ -53,6 +53,18 @@ async function uploadChatFile(file) {
   return r.json()
 }
 
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+function uploadOutcome(r) {
+  if (r.status === 'created') return `added (${plural(r.message_count, 'message')})`
+  if (r.status === 'updated') {
+    return r.new_messages > 0 ? `updated: ${plural(r.new_messages, 'new message')}` : 'updated'
+  }
+  return 'already up to date: no new messages'
+}
+
 async function deleteChatById(chatId) {
   const r = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
   if (!r.ok) {
@@ -66,7 +78,7 @@ async function deleteChatById(chatId) {
   return r.json()
 }
 
-export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults, onClearSearch, onTrending, showAggregations, onHome, onCollections, onBookmarks, onDigests, onEntities, onScrapeRecovery, onExports, onResearchBins, onTopics, showCollections, showBookmarks, showDigests, showEntities, showScrapeRecovery, showExports, showResearchBins, showTopics }) {
+export default function ChatSidebar({ selectedId, onSelectChat, onChatsUpdated, onSearchResults, onClearSearch, onTrending, showAggregations, onHome, onCollections, onBookmarks, onDigests, onEntities, onScrapeRecovery, onExports, onResearchBins, onTopics, showCollections, showBookmarks, showDigests, showEntities, showScrapeRecovery, showExports, showResearchBins, showTopics }) {
   const { chats, loading, error, refresh } = useChats()
   const [globalQuery, setGlobalQuery] = useState('')
   const [fuzzyMode, setFuzzyMode] = useState(false)
@@ -74,9 +86,8 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
   const [didYouMean, setDidYouMean] = useState(null)
 
   const fileInputRef = useRef(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState(null)
-  const [uploadDuplicate, setUploadDuplicate] = useState(null) // {id, name} if replaced=false
+  const [uploadProgress, setUploadProgress] = useState(null) // {done, total} while uploading
+  const [uploadResults, setUploadResults] = useState([]) // one {file, ...response} or {file, error} per file
   const [deletingId, setDeletingId] = useState(null)
   const [deleteError, setDeleteError] = useState(null)
 
@@ -108,30 +119,33 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
   }
 
   async function handleUploadChange(e) {
-    const file = e.target.files?.[0]
+    const files = Array.from(e.target.files || [])
     e.target.value = '' // reset so re-uploading the same file fires onChange
-    if (!file) return
-    setUploadError(null)
-    setUploadDuplicate(null)
-    setUploading(true)
-    try {
-      const data = await uploadChatFile(file)
-      await refresh()
-      if (data.replaced === false) {
-        setUploadDuplicate({ id: data.id, name: data.name })
-      } else {
-        onSelectChat(data.id, data.name)
+    if (!files.length) return
+    setUploadResults([])
+    const results = []
+    // One at a time: two files in the same batch can be exports of the same chat.
+    for (const [i, file] of files.entries()) {
+      setUploadProgress({ done: i, total: files.length })
+      try {
+        results.push({ file: file.name, ...(await uploadChatFile(file)) })
+      } catch (err) {
+        results.push({ file: file.name, error: err.message || String(err) })
       }
-    } catch (err) {
-      setUploadError(err.message || String(err))
-    } finally {
-      setUploading(false)
+    }
+    setUploadProgress(null)
+    setUploadResults(results)
+    try { await refresh() } catch { /* sidebar shows its own load error */ }
+    onChatsUpdated?.(results.filter(r => r.status === 'updated').map(r => r.id))
+    const [only] = results
+    if (results.length === 1 && !only.error && only.status !== 'unchanged') {
+      onSelectChat(only.id, only.name)
     }
   }
 
   async function handleDelete(e, chatId) {
     e.stopPropagation()
-    if (!window.confirm('Remove this chat from the archive?')) return
+    if (!window.confirm('Remove this chat from the archive?\n\nIts .txt file is moved to the .removed-chats folder, so you can upload it again later.')) return
     setDeleteError(null)
     setDeletingId(chatId)
     try {
@@ -170,33 +184,44 @@ export default function ChatSidebar({ selectedId, onSelectChat, onSearchResults,
             ref={fileInputRef}
             type="file"
             accept=".txt,text/plain"
+            multiple
             style={{ display: 'none' }}
             onChange={handleUploadChange}
           />
           <button
             className="upload-btn"
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            title="Upload a WhatsApp chat .txt export"
+            disabled={!!uploadProgress}
+            title="Upload WhatsApp chat .txt exports. Uploading a newer export of a chat you already have adds its new messages."
           >
-            {uploading ? 'Uploading…' : 'Upload chat…'}
+            {uploadProgress
+              ? (uploadProgress.total > 1 ? `Uploading ${uploadProgress.done + 1}/${uploadProgress.total}…` : 'Uploading…')
+              : 'Upload chats…'}
           </button>
         </div>
-        {uploadDuplicate && (
-          <div className="banner info upload-duplicate">
-            This chat already exists in the archive.{' '}
-            <button
-              className="btn-link"
-              onClick={() => {
-                onSelectChat(uploadDuplicate.id, uploadDuplicate.name)
-                setUploadDuplicate(null)
-              }}
-            >Open existing</button>
-            {' '}
-            <button className="btn-link" onClick={() => setUploadDuplicate(null)}>✕</button>
+        {uploadResults.length > 0 && (
+          <div className="upload-results">
+            <ul>
+              {uploadResults.map((r, i) => (
+                <li key={i} className={r.error ? 'error' : r.status}>
+                  {r.error ? (
+                    <>{r.file}: {r.error}</>
+                  ) : (
+                    <>
+                      <button
+                        className="btn-link"
+                        title={r.file}
+                        onClick={() => onSelectChat(r.id, r.name)}
+                      >{r.name}</button>
+                      {' '}{uploadOutcome(r)}
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <button className="btn-link" title="Dismiss" onClick={() => setUploadResults([])}>✕</button>
           </div>
         )}
-        {uploadError && <div className="banner error upload-error">{uploadError}</div>}
         {deleteError && <div className="banner error">{deleteError}</div>}
         {searching && <div className="sidebar-searching">Searching…</div>}
         {globalQuery.trim() && !searching && onResearchBins && (

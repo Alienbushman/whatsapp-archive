@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
+import stat
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -15,8 +18,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .chat_merge import ChatCandidate, base_chat_name, merge_exports, pick_target
 from .models import ChatExport, Message, SystemEvent
-from .parser import parse_file
+from .parser import decode_export, parse_text, split_entries
 from .scrape.article import (
     BlockedPaywall,
     Gone404,
@@ -99,6 +103,19 @@ from .research.dossier import build_entity_dossier
 logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Chats deleted via the API are moved here — outside the *.txt glob, so they
+# stay gone across watcher ticks and restarts, but nothing is destroyed.
+_REMOVED_DIR = ".removed-chats"
+
+
+def _current_umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+_UMASK = _current_umask()
 
 
 def _slug(name: str) -> str:
@@ -285,14 +302,94 @@ def create_app(
     chats: dict[str, ChatExport] = {}
     chat_names: dict[str, str] = {}
     _mtimes: dict[str, float] = {}
-    _fingerprints: dict[str, str] = {}  # sha256(file bytes) → chat_id; prevents duplicate uploads
-    for _path in sorted(archive_dir.glob("*.txt")):
-        _cid = _slug(_path.stem)
-        _bytes = _path.read_bytes()
-        chats[_cid] = parse_file(_path)
-        chat_names[_cid] = _path.stem
-        _mtimes[_cid] = _path.stat().st_mtime
-        _fingerprints[hashlib.sha256(_bytes).hexdigest()] = _cid
+    _fingerprints: dict[str, str] = {}  # sha256(file bytes) → chat_id, for loaded chats only
+    # The watcher thread, uploads and deletes all mutate the four dicts above.
+    _registry_lock = threading.RLock()
+
+    def _register_chat(cid: str, path: Path, data: bytes | None = None) -> ChatExport:
+        """(Re)load one chat file. Raises OSError / UnicodeDecodeError if unreadable."""
+        # Stat before reading: if a copy is still landing, its later mtime
+        # won't match and the next check reloads the finished file.
+        mtime = path.stat().st_mtime
+        if data is None:
+            data = path.read_bytes()
+        export = parse_text(decode_export(data), source_file=path)
+        with _registry_lock:
+            chats[cid] = export
+            chat_names[cid] = path.stem
+            _mtimes[cid] = mtime
+            # Drop the hash of whatever the file held before — a stale hash
+            # would make a later upload of that content claim "already exists".
+            _drop_fingerprints(cid)
+            _fingerprints[hashlib.sha256(data).hexdigest()] = cid
+        return export
+
+    def _drop_fingerprints(cid: str) -> None:
+        for _fp in [fp for fp, c in _fingerprints.items() if c == cid]:
+            del _fingerprints[_fp]
+
+    def _forget_chat(cid: str) -> ChatExport | None:
+        with _registry_lock:
+            export = chats.pop(cid, None)
+            chat_names.pop(cid, None)
+            _mtimes.pop(cid, None)
+            _drop_fingerprints(cid)
+        return export
+
+    # chat_id → (mtime, is_content_error) of a file that wouldn't load. Invalid
+    # UTF-8 is retried once the file changes; I/O errors (a sync client or
+    # virus scanner holding the file) on every pass.
+    _load_failures: dict[str, tuple[float, bool]] = {}
+
+    def _reconcile_with_disk() -> list[tuple[str, bool, ChatExport, set[str]]]:
+        """Bring the loaded chats in line with the archive folder.
+
+        Loads new *.txt files, reloads changed ones, forgets deleted ones. Runs
+        at startup, on each watcher tick and before every upload — so uploads
+        match against what's really on disk even with the watcher off. Returns
+        (chat_id, is_new, export, urls_known_before) per (re)loaded chat.
+        """
+        loaded: list[tuple[str, bool, ChatExport, set[str]]] = []
+        with _registry_lock:
+            # List the folder under the lock: a listing taken while an upload
+            # holds it would miss the new file and "remove" its chat.
+            current = {_slug(_p.stem): _p for _p in sorted(archive_dir.glob("*.txt"))}
+            removed = set(_mtimes) - set(current)
+            for _cid in removed:
+                _forget_chat(_cid)
+            if removed:
+                logger.info("Removed %d chat(s) whose file is gone: %s", len(removed), ", ".join(sorted(removed)))
+            for _cid in set(_load_failures) - set(current):
+                del _load_failures[_cid]
+            for _cid, _p in current.items():
+                try:
+                    _mtime = _p.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                loaded_from = chats[_cid].source_file if _cid in chats else None
+                # Path too: a rename keeps the mtime.
+                if _mtimes.get(_cid) == _mtime and loaded_from == _p:
+                    continue
+                if _load_failures.get(_cid) == (_mtime, True):
+                    continue
+                previous = chats.get(_cid)
+                try:
+                    export = _register_chat(_cid, _p)
+                except (OSError, UnicodeDecodeError) as exc:
+                    failure = (_mtime, isinstance(exc, UnicodeDecodeError))
+                    if _load_failures.get(_cid) != failure:
+                        logger.warning("Could not load %s: %s", _p.name, exc)
+                    _load_failures[_cid] = failure
+                    # The in-memory copy (if any) no longer matches the file;
+                    # don't let an upload be answered "up to date" from it.
+                    _drop_fingerprints(_cid)
+                    continue
+                _load_failures.pop(_cid, None)
+                known = {lnk.url for lnk in previous.links} if previous else set()
+                loaded.append((_cid, previous is None, export, known))
+        return loaded
+
+    _reconcile_with_disk()
     _total = sum(len(e.entries) for e in chats.values())
     logger.info("Loaded %d chats, %d total entries from %s", len(chats), _total, archive_dir)
 
@@ -303,59 +400,44 @@ def create_app(
     _main_loop_holder: dict[str, Any] = {"loop": None}
 
     if watch:
+        def _watch_tick() -> None:
+            for _cid, is_new_chat, export, _known in _reconcile_with_disk():
+                logger.info("Reloaded %s", export.source_file.name)
+                # Trigger the full downstream pipeline (scrape → enrich loop
+                # picks up automatically → embed inside enrich) for any URLs
+                # in the new/updated chat.
+                if _env_flag("BACKGROUND_SCRAPE", "true"):
+                    new_urls = [lnk.url for lnk in export.links]
+                    loop = _main_loop_holder.get("loop")
+                    if new_urls and loop is not None:
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                run_scrape_loop(
+                                    new_urls,
+                                    db,
+                                    {"phase": "pending"},
+                                    concurrency=int(os.environ.get("SCRAPE_CONCURRENCY", "3")),
+                                ),
+                                loop,
+                            )
+                            logger.info(
+                                "[watch] scheduled scrape of %d url(s) from %s chat %s",
+                                len(new_urls),
+                                "new" if is_new_chat else "modified",
+                                _cid,
+                            )
+                        except Exception as exc:
+                            logger.warning("[watch] failed to schedule scrape: %s", exc)
+
         def _watcher():
             while True:
                 time.sleep(watch_interval)
-                current: dict[str, Path] = {
-                    _slug(_p.stem): _p for _p in archive_dir.glob("*.txt")
-                }
-                # Detect and remove deleted files
-                removed = set(_mtimes.keys()) - set(current.keys())
-                for _cid in removed:
-                    chats.pop(_cid, None)
-                    chat_names.pop(_cid, None)
-                    _mtimes.pop(_cid, None)
-                    for _fp in [fp for fp, cid in _fingerprints.items() if cid == _cid]:
-                        _fingerprints.pop(_fp, None)
-                if removed:
-                    logger.info("[watch] removed %d chat(s) (files deleted: %s)",
-                                len(removed), ", ".join(removed))
-                # Detect new or modified files
-                for _cid, _p in current.items():
-                    _mtime = _p.stat().st_mtime
-                    if _mtimes.get(_cid) != _mtime:
-                        is_new_chat = _cid not in _mtimes
-                        _bytes = _p.read_bytes()
-                        chats[_cid] = parse_file(_p)
-                        chat_names[_cid] = _p.stem
-                        _mtimes[_cid] = _mtime
-                        _fingerprints[hashlib.sha256(_bytes).hexdigest()] = _cid
-                        logger.info("Reloaded %s", _p.name)
-                        # Trigger the full downstream pipeline (scrape → enrich loop
-                        # picks up automatically → embed inside enrich) for any URLs
-                        # in the new/updated chat.
-                        if _env_flag("BACKGROUND_SCRAPE", "true"):
-                            new_urls = [lnk.url for lnk in chats[_cid].links]
-                            loop = _main_loop_holder.get("loop")
-                            if new_urls and loop is not None:
-                                try:
-                                    asyncio.run_coroutine_threadsafe(
-                                        run_scrape_loop(
-                                            new_urls,
-                                            db,
-                                            {"phase": "pending"},
-                                            concurrency=int(os.environ.get("SCRAPE_CONCURRENCY", "3")),
-                                        ),
-                                        loop,
-                                    )
-                                    logger.info(
-                                        "[watch] scheduled scrape of %d url(s) from %s chat %s",
-                                        len(new_urls),
-                                        "new" if is_new_chat else "modified",
-                                        _cid,
-                                    )
-                                except Exception as exc:
-                                    logger.warning("[watch] failed to schedule scrape: %s", exc)
+                # An exception here used to kill the thread silently, after
+                # which dropped-in files never loaded again.
+                try:
+                    _watch_tick()
+                except Exception:
+                    logger.exception("[watch] tick failed")
 
         threading.Thread(target=_watcher, daemon=True, name="archive-watcher").start()
         logger.info("File watcher started (interval=%ds)", watch_interval)
@@ -733,83 +815,188 @@ def create_app(
         if not safe_name.endswith(".txt") or safe_name == ".txt":
             raise HTTPException(status_code=400, detail="Invalid filename")
 
-        # Fingerprint dedup: same bytes → same chat, return the existing one
-        fp = hashlib.sha256(content_bytes).hexdigest()
-        if fp in _fingerprints:
-            existing_cid = _fingerprints[fp]
-            existing_export = chats.get(existing_cid)
-            msg_count = (
-                sum(1 for e in existing_export.entries if isinstance(e, Message))
-                if existing_export else 0
-            )
-            logger.info("Upload dedup: %s matches existing chat %s", filename, existing_cid)
-            return {
-                "id": existing_cid,
-                "name": chat_names.get(existing_cid, existing_cid),
-                "message_count": msg_count,
-                "link_count": len(existing_export.links) if existing_export else 0,
-                "replaced": False,
-            }
+        # Parsing and merging a big chat takes seconds — keep the event loop free.
+        loop = asyncio.get_running_loop()
+        result, new_urls = await asyncio.to_thread(
+            _ingest_upload, safe_name, content_bytes,
+            lambda urls: loop.call_soon_threadsafe(_schedule_scrape, urls),
+        )
+        _schedule_scrape(new_urls)
+        return result
 
-        dest = archive_dir / safe_name
-        dest.write_bytes(content_bytes)
-
+    def _ingest_upload(safe_name: str, content_bytes: bytes, schedule) -> tuple[dict, list[str]]:
+        """Add or merge one uploaded export. Returns (response, URLs to scrape)."""
         try:
-            export = parse_file(dest)
-        except Exception as exc:
-            try:
-                dest.unlink()
-            except FileNotFoundError:
-                pass
+            text = decode_export(content_bytes)
+        except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Parse failed: {exc}") from exc
+        incoming = [r.entry for r in split_entries(text)[1]]
+        if not incoming:
+            raise HTTPException(
+                status_code=400,
+                detail="No WhatsApp messages found — is this a chat export? (its date format may not be supported)",
+            )
 
-        cid = _slug(dest.stem)
-        chats[cid] = export
-        chat_names[cid] = dest.stem
-        _mtimes[cid] = dest.stat().st_mtime
-        _fingerprints[fp] = cid
+        fp = hashlib.sha256(content_bytes).hexdigest()
+        with _registry_lock:
+            # Scheduled now: this upload can still fail, and the reloaded
+            # chats' new mtimes mean nothing else would pick their links up.
+            schedule(_reconcile_new_urls())
 
-        message_count = sum(1 for e in export.entries if isinstance(e, Message))
+            # Fast path: byte-identical to a loaded chat.
+            cid = _fingerprints.get(fp)
+            if cid in chats:
+                logger.info("Upload %s: identical to chat %s", safe_name, cid)
+                return _upload_result(cid, "unchanged", 0), []
 
-        new_urls = [lnk.url for lnk in export.links]
-        if new_urls and _env_flag("BACKGROUND_SCRAPE", "true"):
+            # Otherwise work out whether this is a newer export of a chat we
+            # already have (merge it in) or a chat we've never seen (add it).
+            stem = Path(safe_name).stem
+            cid = pick_target(
+                ChatCandidate.of("", stem, incoming),
+                [ChatCandidate.of(c, chat_names[c], e.entries) for c, e in chats.items()],
+            )
+            if cid is not None:
+                dest = chats[cid].source_file
+                old_urls = {lnk.url for lnk in chats[cid].links}
+                try:
+                    existing_text = decode_export(dest.read_bytes())
+                except (OSError, UnicodeDecodeError) as exc:
+                    # Never write over it: it may hold history the upload lacks.
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"The archived copy of this chat ({dest.name}) can't be read ({exc}). "
+                            f"Remove the chat with 🗑 (its file is kept in {_REMOVED_DIR}) and upload again."
+                        ),
+                    ) from exc
+                merge = merge_exports(existing_text, text)
+                if merge.text is None:
+                    logger.info("Upload %s: nothing new for chat %s", safe_name, cid)
+                    return _upload_result(cid, "unchanged", 0), []
+                data = content_bytes if merge.verbatim else merge.text.encode("utf-8")
+                status, new_messages = "updated", merge.added_messages
+            else:
+                dest = archive_dir / f"{_unique_stem(base_chat_name(stem))}.txt"
+                cid = _slug(dest.stem)
+                old_urls = set()
+                data = content_bytes
+                status, new_messages = "created", sum(1 for e in incoming if isinstance(e, Message))
+
+            _write_atomic(dest, data)
+            export = _register_chat(cid, dest, data)
+            _load_failures.pop(cid, None)
+            result = _upload_result(cid, status, new_messages)
+
+        logger.info("Upload %s: %s chat %s (+%d messages)", safe_name, status, cid, new_messages)
+        return result, [lnk.url for lnk in export.links if lnk.url not in old_urls]
+
+    def _reconcile_new_urls() -> list[str]:
+        """Reconcile with the archive folder; return links the (re)loaded chats added."""
+        return [
+            lnk.url
+            for _cid, _new, export, known in _reconcile_with_disk()
+            for lnk in export.links
+            if lnk.url not in known
+        ]
+
+    def _schedule_scrape(urls: list[str]) -> None:
+        # Runs on the event loop (worker threads hand URLs over via call_soon_threadsafe).
+        if urls and _env_flag("BACKGROUND_SCRAPE", "true"):
             asyncio.create_task(
                 run_scrape_loop(
-                    new_urls,
+                    urls,
                     db,
                     {"phase": "pending"},
                     concurrency=int(os.environ.get("SCRAPE_CONCURRENCY", "3")),
                 )
             )
 
-        logger.info("Uploaded chat %s (%d messages, %d links)", dest.stem, message_count, len(export.links))
+    def _schedule_scrape_from_thread(urls: list[str]) -> None:
+        loop = _main_loop_holder.get("loop")
+        if urls and loop is not None:
+            loop.call_soon_threadsafe(_schedule_scrape, urls)
+
+    def _upload_result(cid: str, status: str, new_messages: int) -> dict:
+        export = chats[cid]
         return {
             "id": cid,
-            "name": dest.stem,
-            "message_count": message_count,
+            "name": chat_names[cid],
+            "message_count": sum(1 for e in export.entries if isinstance(e, Message)),
             "link_count": len(export.links),
-            "replaced": True,
+            "status": status,  # "created" | "updated" | "unchanged"
+            "new_messages": new_messages,
+            # Pre-`status` clients read replaced=False as "already in the archive".
+            "replaced": status != "unchanged",
         }
+
+    def _unique_stem(base: str) -> str:
+        # Never write over another chat's file — two chats can share a name.
+        taken = set(chats) | {_slug(p.stem) for p in archive_dir.glob("*.txt")}
+        stem, n = base, 1
+        while not _slug(stem) or _slug(stem) in taken or (archive_dir / f"{stem}.txt").exists():
+            n += 1
+            stem = f"{base} ({n})"
+        return stem
+
+    def _write_atomic(dest: Path, data: bytes) -> None:
+        # Write-then-rename so the watcher never parses a half-written file.
+        fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".upload-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            if os.name != "nt":
+                # mkstemp creates 0600; keep the file's existing mode, or the usual one.
+                os.chmod(tmp, stat.S_IMODE(dest.stat().st_mode) if dest.exists() else 0o666 & ~_UMASK)
+            os.replace(tmp, dest)
+        except BaseException:
+            with contextlib.suppress(OSError):  # don't mask the real error
+                os.unlink(tmp)
+            raise
 
     @app.delete("/api/chats/{chat_id}")
     def delete_chat(
         chat_id: str,
-        remove_file: bool = Query(False, description="Also delete the source .txt file"),
+        remove_file: bool = Query(
+            False,
+            description=f"Delete the source .txt instead of moving it to {_REMOVED_DIR}/",
+        ),
     ) -> dict:
-        if chat_id not in chats:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        export = chats.pop(chat_id)
-        chat_names.pop(chat_id, None)
-        _mtimes.pop(chat_id, None)
-        for _fp in [fp for fp, cid in _fingerprints.items() if cid == chat_id]:
-            _fingerprints.pop(_fp, None)
-        msg_count = sum(1 for e in export.entries if isinstance(e, Message))
-        if remove_file and export.source_file.exists():
-            export.source_file.unlink()
-            logger.info("Deleted chat %s and source file (%d messages)", chat_id, msg_count)
-        else:
-            logger.info("Deleted chat %s from memory (%d messages)", chat_id, msg_count)
+        with _registry_lock:
+            # The file may have been renamed or replaced since it was loaded.
+            _schedule_scrape_from_thread(_reconcile_new_urls())
+            export = chats.get(chat_id)
+            if export is None:
+                raise HTTPException(status_code=404, detail="Chat not found")
+            msg_count = sum(1 for e in export.entries if isinstance(e, Message))
+            src = export.source_file
+            # Deal with the file first, so a failure leaves the chat fully in place.
+            try:
+                if not src.exists():
+                    outcome = "source file already gone"
+                elif remove_file:
+                    src.unlink()
+                    outcome = "source file deleted"
+                else:
+                    # Leaving the file in the archive folder meant the watcher
+                    # (or the next restart) loaded it straight back — and then
+                    # re-uploading it reported "already exists". Park it instead.
+                    outcome = f"file moved to {_park_removed(src)}"
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"Couldn't remove the chat's file: {exc}") from exc
+            _forget_chat(chat_id)
+        logger.info("Deleted chat %s (%d messages; %s)", chat_id, msg_count, outcome)
         return {"deleted": True, "chat_id": chat_id, "removed_messages_count": msg_count}
+
+    def _park_removed(src: Path) -> Path:
+        parked_dir = archive_dir / _REMOVED_DIR
+        parked_dir.mkdir(exist_ok=True)
+        dest, n = parked_dir / src.name, 1
+        while dest.exists():
+            n += 1
+            dest = parked_dir / f"{src.stem} ({n}){src.suffix}"
+        os.replace(src, dest)
+        return dest
 
     @app.get("/api/chats/{chat_id}/messages")
     def get_messages(

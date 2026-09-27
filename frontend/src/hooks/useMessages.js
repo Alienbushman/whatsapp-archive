@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { getMessages } from '../api.js'
 
-export function useMessages(chatId, page, query) {
+// `revision` changes when the chat's content changed on the server (e.g. a newer
+// export was uploaded), forcing a refetch without a new chatId.
+export function useMessages(chatId, page, query, revision = 0) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -27,7 +29,7 @@ export function useMessages(chatId, page, query) {
     }
 
     return () => clearTimeout(debounceRef.current)
-  }, [chatId, page, query])
+  }, [chatId, page, query, revision])
 
   return { data, loading, error }
 }

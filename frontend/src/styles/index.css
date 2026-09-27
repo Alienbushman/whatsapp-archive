@@ -8,6 +8,7 @@
   --accent-hover: #054d44;
   --bubble-bg: #f0f0f0;
   --mark-bg: #fef08a;
+  --danger: #b91c1c;
   --sidebar-width: 280px;
   --radius: 8px;
 }
@@ -23,6 +24,7 @@
     --accent-hover: #02ba96;
     --bubble-bg: #202c33;
     --mark-bg: #854d0e;
+    --danger: #f87171;
   }
 }
 
@@ -41,7 +43,9 @@ body {
 .app-layout {
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
-  grid-template-rows: 1fr;
+  /* minmax(0, …): a bare 1fr row grows to the sidebar's content height, so the
+     chat list never scrolled and chats past the fold were unreachable. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
 }
 

@@ -164,13 +164,20 @@ docker compose up -d --build
 
 ## After it works — adding new chats later
 
-When you export new chats from WhatsApp:
+When you export chats from WhatsApp — brand-new ones, or a fresh export of a
+chat you already have, to add its latest messages:
 
-1. Save the `.txt` file from your phone (e.g. via email or AirDrop)
-2. Open `C:\Users\ben\OneDrive\Desktop\whatsapp-archive\sample-archive\`
-3. Drop the new `.txt` file in there
-4. Wait 30 seconds — the app picks it up automatically. No restart needed.
-5. Refresh your browser at `http://localhost:8800`
+1. Save the `.txt` files from your phone (e.g. via email or AirDrop)
+2. Open the app at `http://localhost:8800`
+3. Click **Upload chats…** at the top left and pick the files (you can pick several at once)
+4. The app tells you what it did with each file:
+   - **added**: a new chat
+   - **updated: N new messages**: a newer export of a chat you already had; only the new messages were added
+   - **already up to date**: nothing new in that file
+
+Removing a chat with the 🗑 button moves its file into
+`sample-archive\.removed-chats\`, so nothing is lost and you can upload it again
+later.
 
 ---
 

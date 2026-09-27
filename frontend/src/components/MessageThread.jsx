@@ -53,12 +53,12 @@ function useMsgBookmarks(chatId) {
   return { bookmarkedKeys, toggleBookmark }
 }
 
-export default function MessageThread({ chatId, chatName, onSearch, onAuthorClick, onHashtagClick, onMentionClick, scrollToMessage, onConsumeScrollTarget, onOpenInChat }) {
+export default function MessageThread({ chatId, chatName, revision = 0, onSearch, onAuthorClick, onHashtagClick, onMentionClick, scrollToMessage, onConsumeScrollTarget, onOpenInChat }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
   const [inputVal, setInputVal] = useState('')
   const [previewUrl, setPreviewUrl] = useState(null)
-  const { data, loading, error } = useMessages(chatId, page, query)
+  const { data, loading, error } = useMessages(chatId, page, query, revision)
   // Stash the ts we're trying to scroll to; cleared after the bubble flashes.
   const [pendingScrollTs, setPendingScrollTs] = useState(null)
 
